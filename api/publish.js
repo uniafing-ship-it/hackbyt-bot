@@ -29,21 +29,46 @@ export default async function handler(req, res) {
   try {
     if (!authorize(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
-    const { text, disable_web_page_preview = false } = req.body || {};
+    const {
+      text,
+      image_url,
+      disable_web_page_preview = false,
+    } = req.body || {};
+
     if (typeof text !== 'string' || !text.trim()) {
       return res.status(400).json({ ok: false, error: 'text is required' });
     }
     if (text.length > 4096) {
       return res.status(400).json({ ok: false, error: 'Telegram text limit is 4096 characters' });
     }
+    if (image_url !== undefined && image_url !== null && typeof image_url !== 'string') {
+      return res.status(400).json({ ok: false, error: 'image_url must be a URL string' });
+    }
 
-    const result = await telegram('sendMessage', {
-      chat_id: CHANNEL,
-      text: text.trim(),
-      disable_web_page_preview,
+    let result;
+    if (image_url) {
+      if (text.length > 1024) {
+        return res.status(400).json({ ok: false, error: 'Telegram photo captions are limited to 1024 characters' });
+      }
+      result = await telegram('sendPhoto', {
+        chat_id: CHANNEL,
+        photo: image_url,
+        caption: text.trim(),
+      });
+    } else {
+      result = await telegram('sendMessage', {
+        chat_id: CHANNEL,
+        text: text.trim(),
+        disable_web_page_preview,
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message_id: result.message_id,
+      channel: CHANNEL,
+      type: image_url ? 'photo' : 'text',
     });
-
-    return res.status(200).json({ ok: true, message_id: result.message_id, channel: CHANNEL });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ ok: false, error: error.message });
