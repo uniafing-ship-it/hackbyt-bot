@@ -19,10 +19,21 @@ async function telegram(method, body) {
 
 function isAllowedAdmin(message) {
   const allowed = (process.env.ADMIN_USER_IDS || '')
-    .split(',')
-    .map((v) => v.trim())
-    .filter(Boolean);
+    .split(',').map((v) => v.trim()).filter(Boolean);
   return allowed.length > 0 && allowed.includes(String(message?.from?.id));
+}
+
+function helpText() {
+  return [
+    'Hackbyt Assistant готов.',
+    '',
+    'Команды:',
+    '/id — показать ваш Telegram ID',
+    '/help — показать команды',
+    '/preview Текст — подготовить черновик',
+    '/post Текст — опубликовать в @hackbyt',
+    '/cancel — отменить сохранённый черновик',
+  ].join('\n');
 }
 
 export default async function handler(req, res) {
@@ -32,19 +43,33 @@ export default async function handler(req, res) {
     const update = req.body || {};
     const message = update.message;
     if (!message?.text) return res.status(200).json({ ok: true });
-    if (!isAllowedAdmin(message)) return res.status(200).json({ ok: true });
 
     const text = message.text.trim();
 
-    if (text === '/start' || text === '/help') {
-      await telegram('sendMessage', {
-        chat_id: message.chat.id,
-        text: 'Hackbyt Bot готов.\n\nКоманды:\n/post Текст — опубликовать пост в @hackbyt\n/id — показать ваш Telegram ID',
-      });
-    } else if (text === '/id') {
+    // /id intentionally works before authorization so the owner can discover their ID.
+    if (text === '/id') {
       await telegram('sendMessage', {
         chat_id: message.chat.id,
         text: `Ваш Telegram ID: ${message.from.id}`,
+      });
+      return res.status(200).json({ ok: true });
+    }
+
+    if (!isAllowedAdmin(message)) return res.status(200).json({ ok: true });
+
+    if (text === '/start' || text === '/help') {
+      await telegram('sendMessage', { chat_id: message.chat.id, text: helpText() });
+    } else if (text === '/cancel') {
+      await telegram('sendMessage', {
+        chat_id: message.chat.id,
+        text: 'Черновиков сейчас нет. Сохранение черновиков добавим следующим этапом.',
+      });
+    } else if (text.startsWith('/preview ')) {
+      const post = text.slice(9).trim();
+      if (!post) throw new Error('Пустой черновик');
+      await telegram('sendMessage', {
+        chat_id: message.chat.id,
+        text: `ПРЕДПРОСМОТР\n\n${post}\n\nДля публикации отправь:\n/post ${post}`,
       });
     } else if (text.startsWith('/post ')) {
       const post = text.slice(6).trim();
@@ -52,10 +77,7 @@ export default async function handler(req, res) {
       await telegram('sendMessage', { chat_id: CHANNEL, text: post });
       await telegram('sendMessage', { chat_id: message.chat.id, text: 'Опубликовано в @hackbyt.' });
     } else {
-      await telegram('sendMessage', {
-        chat_id: message.chat.id,
-        text: 'Неизвестная команда. Используй /help.',
-      });
+      await telegram('sendMessage', { chat_id: message.chat.id, text: 'Неизвестная команда. Используй /help.' });
     }
 
     return res.status(200).json({ ok: true });
