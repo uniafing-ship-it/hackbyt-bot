@@ -1,0 +1,56 @@
+openapi: 3.1.0
+info:
+  title: Hackbyt Publisher API
+  version: 1.0.0
+  description: Publish an approved post to the user's Telegram channel @hackbyt.
+servers:
+  - url: https://hackbyt-bot.vercel.app
+paths:
+  /api/publish:
+    post:
+      operationId: publishHackbytPost
+      summary: Publish a post to @hackbyt
+      description: Publishes the supplied final, user-approved Telegram post to @hackbyt. Do not call this operation unless the user explicitly asks to publish the post.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - text
+              properties:
+                text:
+                  type: string
+                  description: Final Telegram post text, up to 4096 characters.
+                disable_web_page_preview:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Post published successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  message_id:
+                    type: integer
+                  channel:
+                    type: string
+        '400':
+          description: Invalid post.
+        '401':
+          description: Invalid API key.
+        '500':
+          description: Server or Telegram error.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
