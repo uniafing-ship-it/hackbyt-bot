@@ -3,5 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Telegram bot for managing the Hackbyt channel",
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": "22.x"
+  }
 }
