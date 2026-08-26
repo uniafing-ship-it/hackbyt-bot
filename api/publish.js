@@ -24,6 +24,15 @@ async function telegram(method, body) {
   return data.result;
 }
 
+function getOpenAIFileUrl(ref) {
+  if (!ref) return null;
+  if (typeof ref === 'string') return ref.startsWith('https://') ? ref : null;
+  if (typeof ref === 'object') {
+    return ref.download_link || ref.downloadLink || ref.url || null;
+  }
+  return null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' });
 
@@ -44,14 +53,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: 'Telegram text limit is 4096 characters' });
     }
 
-    // GPT Actions can provide files from the current conversation (including
-    // ChatGPT-generated images) as temporary HTTPS download links.
     let chatImageUrl = null;
     if (Array.isArray(openaiFileIdRefs) && openaiFileIdRefs.length > 0) {
-      const first = openaiFileIdRefs[0];
-      if (first && typeof first === 'object' && typeof first.download_link === 'string') {
-        chatImageUrl = first.download_link;
-      }
+      chatImageUrl = getOpenAIFileUrl(openaiFileIdRefs[0]);
     }
 
     const finalImageUrl = chatImageUrl || image_url || null;
