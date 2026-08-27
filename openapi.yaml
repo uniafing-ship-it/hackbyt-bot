@@ -1,16 +1,16 @@
 openapi: 3.1.0
 info:
   title: Hackbyt Publisher API
-  version: 1.0.0
-  description: Publish an approved post to the user's Telegram channel @hackbyt.
+  version: 1.1.0
+  description: Publish one approved Hackbyt Telegram post as a single photo message with a caption. The image can come directly from the current ChatGPT conversation through openaiFileIdRefs.
 servers:
   - url: https://hackbyt-bot.vercel.app
 paths:
   /api/publish:
     post:
-      operationId: publishHackbytPost
-      summary: Publish a post to @hackbyt
-      description: Publishes the supplied final, user-approved Telegram post to @hackbyt. Do not call this operation unless the user explicitly asks to publish the post.
+      operationId: publishHackbytImage
+      summary: Publish an image post to @hackbyt
+      description: Publishes exactly ONE approved Telegram post to @hackbyt. The post consists of one image and its caption. Do not call this operation unless the user explicitly asks to publish. For an image from the current ChatGPT conversation, pass exactly one image in openaiFileIdRefs. ChatGPT will populate the file reference with name, id, mime_type and a temporary HTTPS download_link. Do not invent a download_link.
       security:
         - bearerAuth: []
       requestBody:
@@ -20,17 +20,23 @@ paths:
             schema:
               type: object
               required:
-                - text
+                - openaiFileIdRefs
+                - caption
               properties:
-                text:
+                openaiFileIdRefs:
+                  type: array
+                  minItems: 1
+                  maxItems: 1
+                  description: Exactly one image from the current ChatGPT conversation. It may be a user-uploaded image or an image generated in the conversation. At runtime ChatGPT supplies the file reference object containing name, id, mime_type and a temporary HTTPS download_link.
+                  items:
+                    type: string
+                caption:
                   type: string
-                  description: Final Telegram post text, up to 4096 characters.
-                disable_web_page_preview:
-                  type: boolean
-                  default: false
+                  maxLength: 900
+                  description: Final Telegram caption for the image. Use Telegram-compatible HTML such as <b>...</b>. Keep it at or below 900 characters so it fits safely into a single photo post.
       responses:
         '200':
-          description: Post published successfully.
+          description: The image and caption were published as one Telegram message.
           content:
             application/json:
               schema:
@@ -42,10 +48,14 @@ paths:
                     type: integer
                   channel:
                     type: string
+                  type:
+                    type: string
+                  caption_truncated:
+                    type: boolean
         '400':
-          description: Invalid post.
+          description: Invalid image or caption.
         '401':
-          description: Invalid API key.
+          description: Invalid API key or session.
         '500':
           description: Server or Telegram error.
 components:
