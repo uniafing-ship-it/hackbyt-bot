@@ -1,4 +1,5 @@
 const CHANNEL = '@hackbyt';
+const crypto = require('crypto');
 
 function getToken() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -12,13 +13,30 @@ function secret() {
   return value;
 }
 
+function validSession(token) {
+  if (!token) return false;
+  try {
+    const raw = Buffer.from(token, 'base64url').toString('utf8');
+    const parts = raw.split('.');
+    if (parts.length !== 3) return false;
+    const [userId, issued, signature] = parts;
+    const issuedAt = Number(issued);
+    if (!userId || !Number.isFinite(issuedAt) || Math.abs(Date.now() / 1000 - issuedAt) > 86400) return false;
+    const payload = `${userId}.${issued}`;
+    const expected = crypto.createHmac('sha256', secret()).update(payload).digest('hex');
+    return signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch { return false; }
+}
+
 function authorize(req) {
   const expected = secret();
   const header = req.headers.authorization || '';
   if (header === `Bearer ${expected}`) return true;
-  const session = header.replace(/^Bearer\s+/i, '');
-  const expectedSession = require('crypto').createHmac('sha256', expected).update('hackbyt-web-session').digest('hex');
-  return session.length === expectedSession.length && require('crypto').timingSafeEqual(Buffer.from(session), Buffer.from(expectedSession));
+  const bearer = header.replace(/^Bearer\s+/i, '');
+  if (validSession(bearer)) return true;
+  const cookie = req.headers.cookie || '';
+  const match = cookie.match(/(?:^|;\s*)hackbyt_session=([^;]+)/);
+  return validSession(match && match[1]);
 }
 
 function base64ToBytes(value) {
