@@ -27,9 +27,7 @@ async function telegram(method, body) {
 function getOpenAIFileUrl(ref) {
   if (!ref) return null;
   if (typeof ref === 'string') return ref.startsWith('https://') ? ref : null;
-  if (typeof ref === 'object') {
-    return ref.download_link || ref.downloadLink || ref.url || null;
-  }
+  if (typeof ref === 'object') return ref.download_link || ref.downloadLink || ref.url || null;
   return null;
 }
 
@@ -39,53 +37,36 @@ export default async function handler(req, res) {
   try {
     if (!authorize(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
-    const {
-      text,
-      openaiFileIdRefs,
-      image_url,
-      disable_web_page_preview = false,
-    } = req.body || {};
+    const { openaiFileIdRefs, image_url, caption = '' } = req.body || {};
 
-    if (typeof text !== 'string' || !text.trim()) {
-      return res.status(400).json({ ok: false, error: 'text is required' });
+    let imageUrl = null;
+    if (Array.isArray(openaiFileIdRefs) && openaiFileIdRefs.length) {
+      imageUrl = getOpenAIFileUrl(openaiFileIdRefs[0]);
     }
-    if (text.length > 4096) {
-      return res.status(400).json({ ok: false, error: 'Telegram text limit is 4096 characters' });
+    imageUrl = imageUrl || (typeof image_url === 'string' ? image_url : null);
+
+    if (!imageUrl) {
+      return res.status(400).json({ ok: false, error: 'An image from the current ChatGPT conversation is required.' });
     }
 
-    let chatImageUrl = null;
-    if (Array.isArray(openaiFileIdRefs) && openaiFileIdRefs.length > 0) {
-      chatImageUrl = getOpenAIFileUrl(openaiFileIdRefs[0]);
+    if (typeof caption !== 'string') {
+      return res.status(400).json({ ok: false, error: 'caption must be a string' });
+    }
+    if (caption.length > 1024) {
+      return res.status(400).json({ ok: false, error: 'Telegram photo captions are limited to 1024 characters.' });
     }
 
-    const finalImageUrl = chatImageUrl || image_url || null;
-    let result;
-
-    if (finalImageUrl) {
-      if (text.length > 1024) {
-        return res.status(400).json({
-          ok: false,
-          error: 'Telegram photo captions are limited to 1024 characters. Use text-only mode or split the publication.',
-        });
-      }
-      result = await telegram('sendPhoto', {
-        chat_id: CHANNEL,
-        photo: finalImageUrl,
-        caption: text.trim(),
-      });
-    } else {
-      result = await telegram('sendMessage', {
-        chat_id: CHANNEL,
-        text: text.trim(),
-        disable_web_page_preview,
-      });
-    }
+    const result = await telegram('sendPhoto', {
+      chat_id: CHANNEL,
+      photo: imageUrl,
+      ...(caption.trim() ? { caption: caption.trim() } : {}),
+    });
 
     return res.status(200).json({
       ok: true,
       message_id: result.message_id,
       channel: CHANNEL,
-      type: finalImageUrl ? 'photo' : 'text',
+      type: 'photo',
     });
   } catch (error) {
     console.error(error);
