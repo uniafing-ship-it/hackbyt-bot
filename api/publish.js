@@ -25,7 +25,9 @@ function validSession(token) {
     const payload = `${userId}.${issued}`;
     const expected = crypto.createHmac('sha256', secret()).update(payload).digest('hex');
     return signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 function authorize(req) {
@@ -45,7 +47,6 @@ function base64ToBytes(value) {
 }
 
 // Telegram limits photo captions to 1024 characters.
-// Keep the image and text in ONE message rather than sending a second text message.
 function fitCaption(text, max = 1024) {
   const value = String(text || '').trim();
   if (value.length <= max) return value;
@@ -63,45 +64,85 @@ async function sendPhoto(bytes, contentType, filename, caption) {
   form.append('photo', new Blob([bytes], { type: contentType }), filename);
   if (caption) form.append('caption', caption);
   form.append('parse_mode', 'HTML');
-  const response = await fetch(`https://api.telegram.org/bot${getToken()}/sendPhoto`, { method: 'POST', body: form });
+
+  const response = await fetch(`https://api.telegram.org/bot${getToken()}/sendPhoto`, {
+    method: 'POST',
+    body: form
+  });
   const data = await response.json();
   if (!data.ok) throw new Error(data.description || 'Telegram API error');
   return data.result;
 }
 
+async function downloadActionFile(ref) {
+  if (!ref || typeof ref !== 'object') {
+    throw new Error('Invalid openaiFileIdRefs item');
+  }
+
+  const downloadLink = ref.download_link;
+  if (typeof downloadLink !== 'string' || !downloadLink.startsWith('https://')) {
+    throw new Error('The image download_link was not provided by ChatGPT');
+  }
+
+  const response = await fetch(downloadLink);
+  if (!response.ok) {
+    throw new Error(`Could not download the image from ChatGPT (${response.status})`);
+  }
+
+  const contentType = String(ref.mime_type || response.headers.get('content-type') || 'image/png').split(';')[0].toLowerCase();
+  if (!/^image\/(png|jpe?g|webp)$/i.test(contentType)) {
+    throw new Error('Only PNG, JPEG and WebP images are supported');
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > 8 * 1024 * 1024) {
+    throw new Error('Image is too large. Maximum is 8 MB.');
+  }
+
+  const filename = typeof ref.name === 'string' && ref.name.trim()
+    ? ref.name.trim()
+    : `hackbyt.${contentType === 'image/jpeg' ? 'jpg' : contentType.split('/')[1]}`;
+
+  return { bytes, contentType, filename };
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' });
+
   try {
     if (!authorize(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
-    const {
-      image_base64,
-      content_type = 'image/png',
-      filename = 'hackbyt.png',
-      caption = ''
-    } = req.body || {};
-
-    if (typeof image_base64 !== 'string' || !image_base64) {
-      return res.status(400).json({ ok: false, error: 'image_base64 is required' });
-    }
-
-    if (!/^image\/(png|jpe?g|webp)$/i.test(content_type)) {
-      return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
-    }
+    const body = req.body || {};
+    const caption = body.caption ?? body.text ?? '';
 
     if (typeof caption !== 'string') {
       return res.status(400).json({ ok: false, error: 'Caption must be a string' });
     }
 
-    const bytes = base64ToBytes(image_base64);
-    if (bytes.length > 8 * 1024 * 1024) {
-      return res.status(400).json({ ok: false, error: 'Image is too large. Maximum is 8 MB.' });
+    let image;
+
+    // Preferred path for Hackbyt AI: ChatGPT passes the generated image as
+    // openaiFileIdRefs with a temporary HTTPS download_link.
+    if (Array.isArray(body.openaiFileIdRefs) && body.openaiFileIdRefs.length > 0) {
+      image = await downloadActionFile(body.openaiFileIdRefs[0]);
+    } else if (typeof body.image_base64 === 'string' && body.image_base64) {
+      // Fallback for the Vercel web publisher.
+      const contentType = body.content_type || 'image/png';
+      if (!/^image\/(png|jpe?g|webp)$/i.test(contentType)) {
+        return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
+      }
+      const bytes = base64ToBytes(body.image_base64);
+      if (bytes.length > 8 * 1024 * 1024) {
+        return res.status(400).json({ ok: false, error: 'Image is too large. Maximum is 8 MB.' });
+      }
+      image = { bytes, contentType, filename: body.filename || 'hackbyt.png' };
+    } else {
+      return res.status(400).json({ ok: false, error: 'Image is required. Send openaiFileIdRefs from ChatGPT or image_base64 from the web publisher.' });
     }
 
-    // Always publish the image and caption as a single Telegram message.
-    // If the caption is too long, shorten it instead of creating a second message.
+    // Always publish image + caption as ONE Telegram message.
     const finalCaption = fitCaption(caption, 1024);
-    const photoMessage = await sendPhoto(bytes, content_type, filename, finalCaption);
+    const photoMessage = await sendPhoto(image.bytes, image.contentType, image.filename, finalCaption);
 
     return res.status(200).json({
       ok: true,
