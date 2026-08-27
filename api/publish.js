@@ -13,22 +13,10 @@ function authorize(req) {
   return header === `Bearer ${expected}`;
 }
 
-async function telegram(method, body) {
-  const response = await fetch(`https://api.telegram.org/bot${getToken()}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!data.ok) throw new Error(data.description || 'Telegram API error');
-  return data.result;
-}
-
-function getOpenAIFileUrl(ref) {
-  if (!ref) return null;
-  if (typeof ref === 'string') return ref.startsWith('https://') ? ref : null;
-  if (typeof ref === 'object') return ref.download_link || ref.downloadLink || ref.url || null;
-  return null;
+function base64ToBytes(value) {
+  const normalized = value.includes(',') ? value.split(',').pop() : value;
+  const binary = Buffer.from(normalized, 'base64');
+  return binary;
 }
 
 export default async function handler(req, res) {
@@ -37,37 +25,36 @@ export default async function handler(req, res) {
   try {
     if (!authorize(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
-    const { openaiFileIdRefs, image_url, caption = '' } = req.body || {};
+    const { image_base64, content_type = 'image/png', filename = 'hackbyt.png', caption = '' } = req.body || {};
 
-    let imageUrl = null;
-    if (Array.isArray(openaiFileIdRefs) && openaiFileIdRefs.length) {
-      imageUrl = getOpenAIFileUrl(openaiFileIdRefs[0]);
+    if (typeof image_base64 !== 'string' || !image_base64) {
+      return res.status(400).json({ ok: false, error: 'image_base64 is required' });
     }
-    imageUrl = imageUrl || (typeof image_url === 'string' ? image_url : null);
-
-    if (!imageUrl) {
-      return res.status(400).json({ ok: false, error: 'An image from the current ChatGPT conversation is required.' });
+    if (!/^image\/(png|jpe?g|webp)$/i.test(content_type)) {
+      return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
     }
-
-    if (typeof caption !== 'string') {
-      return res.status(400).json({ ok: false, error: 'caption must be a string' });
-    }
-    if (caption.length > 1024) {
-      return res.status(400).json({ ok: false, error: 'Telegram photo captions are limited to 1024 characters.' });
+    if (typeof caption !== 'string' || caption.length > 1024) {
+      return res.status(400).json({ ok: false, error: 'Caption must be 1024 characters or less' });
     }
 
-    const result = await telegram('sendPhoto', {
-      chat_id: CHANNEL,
-      photo: imageUrl,
-      ...(caption.trim() ? { caption: caption.trim() } : {}),
+    const bytes = base64ToBytes(image_base64);
+    if (bytes.length > 8 * 1024 * 1024) {
+      return res.status(400).json({ ok: false, error: 'Image is too large. Maximum is 8 MB.' });
+    }
+
+    const form = new FormData();
+    form.append('chat_id', CHANNEL);
+    form.append('photo', new Blob([bytes], { type: content_type }), filename);
+    if (caption.trim()) form.append('caption', caption.trim());
+
+    const response = await fetch(`https://api.telegram.org/bot${getToken()}/sendPhoto`, {
+      method: 'POST',
+      body: form,
     });
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.description || 'Telegram API error');
 
-    return res.status(200).json({
-      ok: true,
-      message_id: result.message_id,
-      channel: CHANNEL,
-      type: 'photo',
-    });
+    return res.status(200).json({ ok: true, message_id: data.result.message_id, channel: CHANNEL, type: 'photo' });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ ok: false, error: error.message });
