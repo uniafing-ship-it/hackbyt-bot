@@ -6,11 +6,19 @@ function getToken() {
   return token;
 }
 
+function secret() {
+  const value = process.env.PUBLISH_API_KEY;
+  if (!value) throw new Error('PUBLISH_API_KEY is not configured');
+  return value;
+}
+
 function authorize(req) {
-  const expected = process.env.PUBLISH_API_KEY;
-  if (!expected) throw new Error('PUBLISH_API_KEY is not configured');
+  const expected = secret();
   const header = req.headers.authorization || '';
-  return header === `Bearer ${expected}`;
+  if (header === `Bearer ${expected}`) return true;
+  const session = header.replace(/^Bearer\s+/i, '');
+  const expectedSession = require('crypto').createHmac('sha256', expected).update('hackbyt-web-session').digest('hex');
+  return session.length === expectedSession.length && require('crypto').timingSafeEqual(Buffer.from(session), Buffer.from(expectedSession));
 }
 
 function base64ToBytes(value) {
@@ -38,11 +46,7 @@ async function sendPhoto(bytes, contentType, filename, caption) {
   form.append('photo', new Blob([bytes], { type: contentType }), filename);
   if (caption) form.append('caption', caption);
   form.append('parse_mode', 'HTML');
-
-  const response = await fetch(`https://api.telegram.org/bot${getToken()}/sendPhoto`, {
-    method: 'POST',
-    body: form,
-  });
+  const response = await fetch(`https://api.telegram.org/bot${getToken()}/sendPhoto`, { method: 'POST', body: form });
   const data = await response.json();
   if (!data.ok) throw new Error(data.description || 'Telegram API error');
   return data.result;
@@ -50,13 +54,8 @@ async function sendPhoto(bytes, contentType, filename, caption) {
 
 async function sendMessage(text) {
   const response = await fetch(`https://api.telegram.org/bot${getToken()}/sendMessage`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: CHANNEL,
-      text,
-      parse_mode: 'HTML',
-    }),
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: CHANNEL, text, parse_mode: 'HTML' }),
   });
   const data = await response.json();
   if (!data.ok) throw new Error(data.description || 'Telegram API error');
@@ -65,30 +64,16 @@ async function sendMessage(text) {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' });
-
   try {
     if (!authorize(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
-
     const { image_base64, content_type = 'image/png', filename = 'hackbyt.png', caption = '' } = req.body || {};
-
-    if (typeof image_base64 !== 'string' || !image_base64) {
-      return res.status(400).json({ ok: false, error: 'image_base64 is required' });
-    }
-    if (!/^image\/(png|jpe?g|webp)$/i.test(content_type)) {
-      return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
-    }
-    if (typeof caption !== 'string') {
-      return res.status(400).json({ ok: false, error: 'Caption must be a string' });
-    }
-
+    if (typeof image_base64 !== 'string' || !image_base64) return res.status(400).json({ ok: false, error: 'image_base64 is required' });
+    if (!/^image\/(png|jpe?g|webp)$/i.test(content_type)) return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
+    if (typeof caption !== 'string') return res.status(400).json({ ok: false, error: 'Caption must be a string' });
     const bytes = base64ToBytes(image_base64);
-    if (bytes.length > 8 * 1024 * 1024) {
-      return res.status(400).json({ ok: false, error: 'Image is too large. Maximum is 8 MB.' });
-    }
-
+    if (bytes.length > 8 * 1024 * 1024) return res.status(400).json({ ok: false, error: 'Image is too large. Maximum is 8 MB.' });
     const chunks = splitTelegramText(caption, 4096);
     let photoMessage;
-
     if (chunks.length && chunks[0].length <= 1024) {
       photoMessage = await sendPhoto(bytes, content_type, filename, chunks[0]);
       for (const chunk of chunks.slice(1)) await sendMessage(chunk);
@@ -96,14 +81,7 @@ export default async function handler(req, res) {
       photoMessage = await sendPhoto(bytes, content_type, filename, '');
       for (const chunk of chunks) await sendMessage(chunk);
     }
-
-    return res.status(200).json({
-      ok: true,
-      message_id: photoMessage.message_id,
-      channel: CHANNEL,
-      type: 'photo_with_text',
-      messages_sent: 1 + (chunks.length > 0 ? (chunks[0].length <= 1024 ? chunks.length - 1 : chunks.length) : 0),
-    });
+    return res.status(200).json({ ok: true, message_id: photoMessage.message_id, channel: CHANNEL, type: 'photo_with_text' });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ ok: false, error: error.message });
