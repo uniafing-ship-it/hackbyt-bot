@@ -44,18 +44,17 @@ function base64ToBytes(value) {
   return Buffer.from(normalized, 'base64');
 }
 
-function splitTelegramText(text, max = 4096) {
-  const chunks = [];
-  let rest = text.trim();
-  while (rest.length > max) {
-    let cut = rest.lastIndexOf('\n', max);
-    if (cut < Math.floor(max * 0.5)) cut = rest.lastIndexOf(' ', max);
-    if (cut < 1) cut = max;
-    chunks.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
-  }
-  if (rest) chunks.push(rest);
-  return chunks;
+// Telegram limits photo captions to 1024 characters.
+// Keep the image and text in ONE message rather than sending a second text message.
+function fitCaption(text, max = 1024) {
+  const value = String(text || '').trim();
+  if (value.length <= max) return value;
+  const suffix = '…';
+  const limit = max - suffix.length;
+  let cut = value.lastIndexOf('\n', limit);
+  if (cut < Math.floor(limit * 0.6)) cut = value.lastIndexOf(' ', limit);
+  if (cut < 1) cut = limit;
+  return value.slice(0, cut).trimEnd() + suffix;
 }
 
 async function sendPhoto(bytes, contentType, filename, caption) {
@@ -70,36 +69,47 @@ async function sendPhoto(bytes, contentType, filename, caption) {
   return data.result;
 }
 
-async function sendMessage(text) {
-  const response = await fetch(`https://api.telegram.org/bot${getToken()}/sendMessage`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: CHANNEL, text, parse_mode: 'HTML' }),
-  });
-  const data = await response.json();
-  if (!data.ok) throw new Error(data.description || 'Telegram API error');
-  return data.result;
-}
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' });
   try {
     if (!authorize(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
-    const { image_base64, content_type = 'image/png', filename = 'hackbyt.png', caption = '' } = req.body || {};
-    if (typeof image_base64 !== 'string' || !image_base64) return res.status(400).json({ ok: false, error: 'image_base64 is required' });
-    if (!/^image\/(png|jpe?g|webp)$/i.test(content_type)) return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
-    if (typeof caption !== 'string') return res.status(400).json({ ok: false, error: 'Caption must be a string' });
-    const bytes = base64ToBytes(image_base64);
-    if (bytes.length > 8 * 1024 * 1024) return res.status(400).json({ ok: false, error: 'Image is too large. Maximum is 8 MB.' });
-    const chunks = splitTelegramText(caption, 4096);
-    let photoMessage;
-    if (chunks.length && chunks[0].length <= 1024) {
-      photoMessage = await sendPhoto(bytes, content_type, filename, chunks[0]);
-      for (const chunk of chunks.slice(1)) await sendMessage(chunk);
-    } else {
-      photoMessage = await sendPhoto(bytes, content_type, filename, '');
-      for (const chunk of chunks) await sendMessage(chunk);
+
+    const {
+      image_base64,
+      content_type = 'image/png',
+      filename = 'hackbyt.png',
+      caption = ''
+    } = req.body || {};
+
+    if (typeof image_base64 !== 'string' || !image_base64) {
+      return res.status(400).json({ ok: false, error: 'image_base64 is required' });
     }
-    return res.status(200).json({ ok: true, message_id: photoMessage.message_id, channel: CHANNEL, type: 'photo_with_text' });
+
+    if (!/^image\/(png|jpe?g|webp)$/i.test(content_type)) {
+      return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
+    }
+
+    if (typeof caption !== 'string') {
+      return res.status(400).json({ ok: false, error: 'Caption must be a string' });
+    }
+
+    const bytes = base64ToBytes(image_base64);
+    if (bytes.length > 8 * 1024 * 1024) {
+      return res.status(400).json({ ok: false, error: 'Image is too large. Maximum is 8 MB.' });
+    }
+
+    // Always publish the image and caption as a single Telegram message.
+    // If the caption is too long, shorten it instead of creating a second message.
+    const finalCaption = fitCaption(caption, 1024);
+    const photoMessage = await sendPhoto(bytes, content_type, filename, finalCaption);
+
+    return res.status(200).json({
+      ok: true,
+      message_id: photoMessage.message_id,
+      channel: CHANNEL,
+      type: 'single_photo_post',
+      caption_truncated: finalCaption.length < caption.trim().length
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ ok: false, error: error.message });
