@@ -1,4 +1,5 @@
 import { generateText, generateImage } from '../lib/openai.js';
+import { updateOldPosts } from '../lib/channelHistory.js';
 
 const CHANNEL = '@hackbyt';
 const CHANNEL_URL = 'https://t.me/hackbyt';
@@ -61,6 +62,7 @@ function helpText() {
     '/rewrite Текст — улучшить текст',
     '/preview Текст — предпросмотр текста',
     '/post Текст — вручную опубликовать текст',
+    '/footer_old — добавить подпись к старым постам',
     '',
     'Подпись на канал добавляется автоматически при публикации.',
     'После /create публикация выполняется кнопкой «Публиковать».',
@@ -194,6 +196,10 @@ export default async function handler(req, res) {
       if (!post) throw new Error('Пустой пост');
       await telegram('sendMessage', { chat_id: CHANNEL, text: withFooter(post), parse_mode: 'HTML' });
       await send(message, 'Опубликовано в @hackbyt. Подпись добавлена автоматически.');
+    } else if (text === '/footer_old') {
+      await send(message, 'Начинаю обработку последних 100 публикаций…');
+      const result = await updateOldPosts({ limit: 100 });
+      await send(message, `Готово. Просмотрено: ${result.scanned}\nИзменено: ${result.updated}\nПропущено: ${result.skipped}\nОшибок: ${result.errors}`);
     } else {
       await send(message, 'Неизвестная команда. Используй /help.');
     }
