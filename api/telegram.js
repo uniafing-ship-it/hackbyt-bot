@@ -1,6 +1,10 @@
 import { generateText, generateImage } from '../lib/openai.js';
+import { updateOldPosts } from '../lib/channelHistory.js';
 
 const CHANNEL = '@hackbyt';
+const CHANNEL_URL = 'https://t.me/hackbyt';
+const FOOTER = `\n\n────────────\n<b><a href="${CHANNEL_URL}">Подписаться на Hackbyt</a></b> — полезные лайфхаки каждый день.`;
+const FOOTER_MARKER = 'Подписаться на Hackbyt';
 
 function getToken() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -17,6 +21,12 @@ async function telegram(method, body) {
   const data = await response.json();
   if (!data.ok) throw new Error(data.description || 'Telegram API error');
   return data.result;
+}
+
+function withFooter(text) {
+  const value = String(text || '').trim();
+  if (!value || value.includes(FOOTER_MARKER)) return value;
+  return `${value}${FOOTER}`;
 }
 
 async function sendPhoto(chatId, imageBuffer, caption, replyMarkup) {
@@ -52,7 +62,9 @@ function helpText() {
     '/rewrite Текст — улучшить текст',
     '/preview Текст — предпросмотр текста',
     '/post Текст — вручную опубликовать текст',
+    '/footer_old — добавить подпись к старым постам',
     '',
+    'Подпись на канал добавляется автоматически при публикации.',
     'После /create публикация выполняется кнопкой «Публиковать».',
   ].join('\n');
 }
@@ -78,8 +90,9 @@ function stripHtml(text) {
 }
 
 async function createDraft(topic) {
-  const post = await generateText(`${STYLE}\n\nНапиши готовый пост на тему: ${topic}\n\nВерни только текст поста. Не добавляй комментарии о своей работе.`);
-  const plainPost = stripHtml(post);
+  const generatedPost = await generateText(`${STYLE}\n\nНапиши готовый пост на тему: ${topic}\n\nВерни только текст поста. Не добавляй комментарии о своей работе.`);
+  const post = withFooter(generatedPost);
+  const plainPost = stripHtml(generatedPost);
   const imagePrompt = `${IMAGE_STYLE}\n\nТема поста: ${topic}\n\nТекст поста для понимания смысла:\n${plainPost}\n\nСделай обложку, которая визуально показывает главный лайфхак из этого поста. Не переноси весь текст поста на изображение.`;
   const image = await generateImage(imagePrompt);
   return { post, image };
@@ -173,16 +186,20 @@ export default async function handler(req, res) {
       const source = text.slice(9).trim();
       if (!source) throw new Error('Укажи текст после /rewrite');
       const result = await generateText(`${STYLE}\n\nПерепиши и улучши этот текст, сохранив фактический смысл:\n\n${source}\n\nВерни только готовый текст.`);
-      await send(message, `ПРЕДПРОСМОТР\n\n${result}\n\nЕсли подходит, отправь /post ${result}`);
+      await send(message, `ПРЕДПРОСМОТР\n\n${result}\n\nПри публикации через /post подпись на канал добавится автоматически.`);
     } else if (text.startsWith('/preview ')) {
       const post = text.slice(9).trim();
       if (!post) throw new Error('Пустой черновик');
-      await send(message, `ПРЕДПРОСМОТР\n\n${post}`);
+      await send(message, `ПРЕДПРОСМОТР\n\n${withFooter(post)}`);
     } else if (text.startsWith('/post ')) {
       const post = text.slice(6).trim();
       if (!post) throw new Error('Пустой пост');
-      await telegram('sendMessage', { chat_id: CHANNEL, text: post, parse_mode: 'HTML' });
-      await send(message, 'Опубликовано в @hackbyt.');
+      await telegram('sendMessage', { chat_id: CHANNEL, text: withFooter(post), parse_mode: 'HTML' });
+      await send(message, 'Опубликовано в @hackbyt. Подпись добавлена автоматически.');
+    } else if (text === '/footer_old') {
+      await send(message, 'Начинаю обработку последних 100 публикаций…');
+      const result = await updateOldPosts({ limit: 100 });
+      await send(message, `Готово. Просмотрено: ${result.scanned}\nИзменено: ${result.updated}\nПропущено: ${result.skipped}\nОшибок: ${result.errors}`);
     } else {
       await send(message, 'Неизвестная команда. Используй /help.');
     }
