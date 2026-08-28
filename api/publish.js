@@ -1,6 +1,9 @@
 const CHANNEL = '@hackbyt';
 const crypto = require('crypto');
 
+const SUBSCRIBE_BLOCK = '<b>Подписывайся и проверяй вместе с нами 👇</b>\n<a href="https://t.me/hackbyt">Hackbyt — бытовые лайфхаки, которые работают.</a>';
+const SUBSCRIBE_MARKER = 'https://t.me/hackbyt';
+
 function getToken() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not configured');
@@ -46,7 +49,6 @@ function base64ToBytes(value) {
   return Buffer.from(normalized, 'base64');
 }
 
-// Telegram limits photo captions to 1024 characters.
 function fitCaption(text, max = 1024) {
   const value = String(text || '').trim();
   if (value.length <= max) return value;
@@ -56,6 +58,38 @@ function fitCaption(text, max = 1024) {
   if (cut < Math.floor(limit * 0.6)) cut = value.lastIndexOf(' ', limit);
   if (cut < 1) cut = limit;
   return value.slice(0, cut).trimEnd() + suffix;
+}
+
+function stripHtml(value) {
+  return String(value || '').replace(/<[^>]*>/g, '');
+}
+
+// The subscription block is enforced server-side so it is added even if
+// Hackbyt AI forgets to include it in the caption.
+function buildCaption(caption) {
+  const base = String(caption || '').trim();
+  if (base.includes(SUBSCRIBE_MARKER)) return fitCaption(base, 1024);
+
+  const separator = base ? '\n\n' : '';
+  const full = `${base}${separator}${SUBSCRIBE_BLOCK}`;
+  if (full.length <= 1024) return full;
+
+  // The AI instructions target a short caption. This is only a safety fallback:
+  // preserve the mandatory subscription block and shorten the main text first.
+  const available = 1024 - separator.length - SUBSCRIBE_BLOCK.length;
+  if (available <= 0) return SUBSCRIBE_BLOCK.slice(0, 1024);
+
+  let shortened = base.slice(0, available).trimEnd();
+  if (shortened.length < base.length) {
+    const safeCut = Math.max(shortened.lastIndexOf('\n'), shortened.lastIndexOf(' '));
+    if (safeCut > available * 0.6) shortened = shortened.slice(0, safeCut).trimEnd();
+    // Avoid leaving malformed HTML if the safety cut lands inside markup.
+    if ((shortened.match(/</g) || []).length !== (shortened.match(/>/g) || []).length) {
+      shortened = stripHtml(shortened).trimEnd();
+    }
+  }
+
+  return `${shortened}${separator}${SUBSCRIBE_BLOCK}`;
 }
 
 async function sendPhoto(bytes, contentType, filename, caption) {
@@ -121,12 +155,9 @@ export default async function handler(req, res) {
 
     let image;
 
-    // Preferred path for Hackbyt AI: ChatGPT passes the generated image as
-    // openaiFileIdRefs with a temporary HTTPS download_link.
     if (Array.isArray(body.openaiFileIdRefs) && body.openaiFileIdRefs.length > 0) {
       image = await downloadActionFile(body.openaiFileIdRefs[0]);
     } else if (typeof body.image_base64 === 'string' && body.image_base64) {
-      // Fallback for the Vercel web publisher.
       const contentType = body.content_type || 'image/png';
       if (!/^image\/(png|jpe?g|webp)$/i.test(contentType)) {
         return res.status(400).json({ ok: false, error: 'Only PNG, JPEG and WebP images are supported' });
@@ -141,7 +172,8 @@ export default async function handler(req, res) {
     }
 
     // Always publish image + caption as ONE Telegram message.
-    const finalCaption = fitCaption(caption, 1024);
+    // The subscription block is added here server-side and therefore cannot be forgotten by the AI.
+    const finalCaption = buildCaption(caption);
     const photoMessage = await sendPhoto(image.bytes, image.contentType, image.filename, finalCaption);
 
     return res.status(200).json({
@@ -149,7 +181,8 @@ export default async function handler(req, res) {
       message_id: photoMessage.message_id,
       channel: CHANNEL,
       type: 'single_photo_post',
-      caption_truncated: finalCaption.length < caption.trim().length
+      subscription_added: !caption.includes(SUBSCRIBE_MARKER),
+      caption_length: finalCaption.length
     });
   } catch (error) {
     console.error(error);
