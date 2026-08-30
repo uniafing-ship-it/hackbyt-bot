@@ -1,0 +1,81 @@
+openapi: 3.1.0
+info:
+  title: Hackbyt AI Channel History
+  version: 1.0.0
+  description: Read the current public Telegram channel history for Hackbyt AI and check a proposed topic against published posts.
+servers:
+  - url: https://hackbyt-bot.vercel.app
+paths:
+  /api/channel-history:
+    get:
+      operationId: getHackbytChannelHistory
+      summary: Get Hackbyt channel history
+      description: Returns recent public posts from @hackbyt. If topic is supplied, also returns the most textually similar posts. Use this before creating or suggesting a new Hackbyt post so previously published topics are not repeated.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 120
+            default: 50
+          description: Number of recent posts to inspect.
+        - name: topic
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Proposed topic to compare with published posts.
+      responses:
+        '200':
+          description: Channel history and optional similarity results.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  channel:
+                    type: string
+                  count:
+                    type: integer
+                  posts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Post'
+                  topic:
+                    type: string
+                  similar:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SimilarPost'
+        '500':
+          description: Channel history could not be read.
+components:
+  schemas:
+    Post:
+      type: object
+      properties:
+        id:
+          type: integer
+        date:
+          type: string
+          nullable: true
+        url:
+          type: string
+        text:
+          type: string
+    SimilarPost:
+      type: object
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+        text:
+          type: string
+        similarity:
+          type: integer
+          description: Text similarity percentage returned by the server.
