@@ -13,34 +13,24 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'Method not allowed' });
 
   try {
-    const limit = Math.min(Math.max(Number(req.query?.limit) || 50, 1), 120);
+    const limit = Math.min(Math.max(Number(req.query?.limit) || 120, 1), 120);
     const topic = typeof req.query?.topic === 'string' ? req.query.topic.trim() : '';
     const posts = await getChannelPosts({ limit, maxPages: Math.ceil(limit / 5) + 2 });
     const similar = topic ? findSimilarPosts(topic, posts, 10) : [];
-
-    const result = posts.map((post) => ({
-      id: post.id,
-      date: post.date || null,
-      url: post.url,
-      text: post.text,
-    }));
+    const topScore = similar[0]?.score || 0;
+    const status = topScore >= 0.55 ? 'similar' : topScore >= 0.35 ? 'partial' : 'unique';
 
     return json(res, 200, {
       ok: true,
       channel: `@${process.env.TELEGRAM_CHANNEL_USERNAME || 'hackbyt'}`,
-      count: result.length,
-      posts: result,
-      ...(topic
-        ? {
-            topic,
-            similar: similar.map((post) => ({
-              id: post.id,
-              url: post.url,
-              text: post.text,
-              similarity: Math.round(post.score * 100),
-            })),
-          }
-        : {}),
+      count: posts.length,
+      posts: posts.map((post) => ({ id: post.id, date: post.date || null, url: post.url, text: post.text })),
+      ...(topic ? {
+        topic,
+        status,
+        maxSimilarity: Math.round(topScore * 100),
+        similar: similar.map((post) => ({ id: post.id, url: post.url, text: post.text, similarity: Math.round(post.score * 100) })),
+      } : {}),
     });
   } catch (error) {
     return json(res, 500, { ok: false, error: error.message || 'Failed to read channel history' });
