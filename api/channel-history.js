@@ -1,7 +1,7 @@
 import { getChannelPosts, findSimilarPosts } from '../lib/channel.js';
 
 function json(res, status, body) {
-  res.status(status).setHeader('content-type', 'application/json; charset=utf-8');
+  res.setHeader('content-type', 'application/json; charset=utf-8');
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-methods', 'GET, OPTIONS');
   res.setHeader('access-control-allow-headers', 'Content-Type');
@@ -13,8 +13,11 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'Method not allowed' });
 
   try {
-    const limit = Math.min(Math.max(Number(req.query?.limit) || 30, 1), 120);
+    const limit = Math.min(Math.max(Number(req.query?.limit) || 50, 1), 120);
+    const topic = typeof req.query?.topic === 'string' ? req.query.topic.trim() : '';
     const posts = await getChannelPosts({ limit, maxPages: Math.ceil(limit / 5) + 2 });
+    const similar = topic ? findSimilarPosts(topic, posts, 10) : [];
+
     const result = posts.map((post) => ({
       id: post.id,
       date: post.date || null,
@@ -27,6 +30,17 @@ export default async function handler(req, res) {
       channel: `@${process.env.TELEGRAM_CHANNEL_USERNAME || 'hackbyt'}`,
       count: result.length,
       posts: result,
+      ...(topic
+        ? {
+            topic,
+            similar: similar.map((post) => ({
+              id: post.id,
+              url: post.url,
+              text: post.text,
+              similarity: Math.round(post.score * 100),
+            })),
+          }
+        : {}),
     });
   } catch (error) {
     return json(res, 500, { ok: false, error: error.message || 'Failed to read channel history' });
