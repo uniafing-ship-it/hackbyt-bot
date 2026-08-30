@@ -1,4 +1,5 @@
 import { generateText, generateImage } from '../lib/openai.js';
+import { getChannelPosts, findSimilarPosts, formatPostsForPrompt, CHANNEL_USERNAME } from '../lib/channel.js';
 
 const CHANNEL = '@hackbyt';
 
@@ -46,6 +47,8 @@ function helpText() {
     'Hackbyt AI готов.', '',
     '/id — показать Telegram ID',
     '/help — команды',
+    '/posts — последние публикации канала',
+    '/check Тема — проверить тему на повторы',
     '/idea — 5 идей для канала',
     '/create Тема — создать пост + картинку и показать предпросмотр',
     '/write Тема — то же самое, что /create',
@@ -53,6 +56,7 @@ function helpText() {
     '/preview Текст — предпросмотр текста',
     '/post Текст — вручную опубликовать текст',
     '',
+    'Перед /create Hackbyt AI проверяет историю канала и учитывает уже опубликованные темы.',
     'После /create публикация выполняется кнопкой «Публиковать».',
   ].join('\n');
 }
@@ -77,12 +81,48 @@ function stripHtml(text) {
   return text.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
 }
 
+async function getChannelContext(topic) {
+  const posts = await getChannelPosts({ limit: 120, maxPages: 12 });
+  const similar = findSimilarPosts(topic, posts, 8);
+  return { posts, similar };
+}
+
+function formatCheckResult(topic, posts, similar) {
+  const strongest = similar[0];
+  const score = strongest ? Math.round(strongest.score * 100) : 0;
+
+  let status = 'УНИКАЛЬНО';
+  if (score >= 55) status = 'ПОХОЖАЯ ТЕМА';
+  else if (score >= 35) status = 'ЕСТЬ ЧАСТИЧНОЕ СОВПАДЕНИЕ';
+
+  const lines = [
+    `Проверил историю @${CHANNEL_USERNAME}. Найдено публикаций: ${posts.length}.`,
+    `Статус: ${status}`,
+    `Максимальное текстовое сходство: ${score}%`,
+  ];
+
+  if (similar.length) {
+    lines.push('', 'Похожие публикации:');
+    for (const post of similar.slice(0, 5)) {
+      const preview = post.text.replace(/\s+/g, ' ').slice(0, 140) || '(пост без текста)';
+      lines.push(`• #${post.id} — ${preview}`, post.url);
+    }
+  } else {
+    lines.push('', 'Похожих публикаций не найдено.');
+  }
+
+  return lines.join('\n');
+}
+
 async function createDraft(topic) {
-  const post = await generateText(`${STYLE}\n\nНапиши готовый пост на тему: ${topic}\n\nВерни только текст поста. Не добавляй комментарии о своей работе.`);
+  const { posts, similar } = await getChannelContext(topic);
+  const history = formatPostsForPrompt(similar.length ? similar : posts.slice(0, 25));
+
+  const post = await generateText(`${STYLE}\n\nТема нового поста: ${topic}\n\nНиже — уже опубликованные материалы из @${CHANNEL_USERNAME}. Используй их только для проверки повторов. Не повторяй их тему, формулировку или тот же самый совет. Если тема слишком похожа, смести угол подачи или предложи другой практический способ.\n\n${history}\n\nНапиши новый готовый пост. Верни только текст поста. Не добавляй комментарии о своей работе.`);
   const plainPost = stripHtml(post);
   const imagePrompt = `${IMAGE_STYLE}\n\nТема поста: ${topic}\n\nТекст поста для понимания смысла:\n${plainPost}\n\nСделай обложку, которая визуально показывает главный лайфхак из этого поста. Не переноси весь текст поста на изображение.`;
   const image = await generateImage(imagePrompt);
-  return { post, image };
+  return { post, image, postsChecked: posts.length, similar };
 }
 
 async function send(message, text) {
@@ -153,17 +193,38 @@ export default async function handler(req, res) {
 
     if (text === '/start' || text === '/help') {
       await send(message, helpText());
+    } else if (text === '/posts') {
+      const posts = await getChannelPosts({ limit: 10, maxPages: 3 });
+      if (!posts.length) throw new Error('Не удалось найти публикации в публичной ленте канала');
+      const lines = [`Последние публикации @${CHANNEL_USERNAME}:`, ''];
+      for (const post of posts) {
+        const preview = post.text.replace(/\s+/g, ' ').slice(0, 180) || '(пост без текста / только медиа)';
+        lines.push(`#${post.id} — ${preview}`, post.url, '');
+      }
+      await send(message, lines.join('\n').trim());
+    } else if (text.startsWith('/check ')) {
+      const topic = text.slice(7).trim();
+      if (!topic) throw new Error('Укажи тему после /check');
+      await send(message, 'Проверяю историю @hackbyt…');
+      const { posts, similar } = await getChannelContext(topic);
+      await send(message, formatCheckResult(topic, posts, similar));
     } else if (text === '/idea') {
-      const result = await generateText(`${STYLE}\n\nДай 5 разных идей для следующих постов. Для каждой: заголовок и одна строка, почему это полезно. Не повторяй очевидные советы.`);
+      const posts = await getChannelPosts({ limit: 100, maxPages: 10 });
+      const history = formatPostsForPrompt(posts, 18000);
+      const result = await generateText(`${STYLE}\n\nПредложи 5 разных идей для следующих постов. Сначала проанализируй уже опубликованные материалы ниже и не повторяй их темы. Для каждой идеи дай заголовок и одну строку, почему она полезна.\n\nИстория @${CHANNEL_USERNAME}:\n${history}`);
       await send(message, result);
     } else if (text.startsWith('/create ') || text.startsWith('/write ')) {
       const topic = text.startsWith('/create ') ? text.slice(8).trim() : text.slice(7).trim();
       if (!topic) throw new Error('Укажи тему после /create');
 
-      await send(message, 'Готовлю пост и изображение в стиле Hackbyt…');
-      const { post, image } = await createDraft(topic);
+      await send(message, 'Проверяю историю @hackbyt и готовлю пост с учётом уже опубликованных материалов…');
+      const { post, image, postsChecked, similar } = await createDraft(topic);
+      const strongest = similar[0];
+      const checkLine = strongest
+        ? `Проверено публикаций: ${postsChecked}. Ближайшее совпадение по теме: ${Math.round(strongest.score * 100)}%.`
+        : `Проверено публикаций: ${postsChecked}. Похожих публикаций не найдено.`;
 
-      await sendPhoto(message.chat.id, image, post, {
+      await sendPhoto(message.chat.id, image, `${post}\n\n<i>${checkLine}</i>`, {
         inline_keyboard: [[
           { text: 'Публиковать', callback_data: 'hb_publish' },
           { text: 'Отмена', callback_data: 'hb_cancel' },
